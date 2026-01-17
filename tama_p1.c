@@ -1,4 +1,5 @@
 #include <furi.h>
+#include <furi_hal_bus.h>
 #include <gui/gui.h>
 #include <input/input.h>
 #include <storage/storage.h>
@@ -38,12 +39,13 @@ static void tama_p1_draw_callback(Canvas* const canvas, void* cb_ctx) {
         // FURI_LOG_D(TAG, "Drawing frame");
         // Calculate positioning
         uint16_t canv_width = canvas_width(canvas);
-        uint16_t canv_height = canvas_height(canvas);
+        // uint16_t canv_height = canvas_height(canvas);
         uint16_t lcd_matrix_scaled_width = 32 * TAMA_SCREEN_SCALE_FACTOR;
-        uint16_t lcd_matrix_scaled_height = 16 * TAMA_SCREEN_SCALE_FACTOR;
+        // uint16_t lcd_matrix_scaled_height = 16 * TAMA_SCREEN_SCALE_FACTOR;
         uint16_t lcd_matrix_top = 0;
         uint16_t lcd_matrix_left = (canv_width - lcd_matrix_scaled_width) / 2;
 
+        /*
         uint16_t lcd_icon_upper_top = lcd_matrix_top - TAMA_LCD_ICON_SIZE - TAMA_LCD_ICON_MARGIN;
         uint16_t lcd_icon_upper_left = lcd_matrix_left;
         uint16_t lcd_icon_lower_top =
@@ -51,7 +53,7 @@ static void tama_p1_draw_callback(Canvas* const canvas, void* cb_ctx) {
         uint16_t lcd_icon_lower_left = lcd_matrix_left;
         uint16_t lcd_icon_spacing_horiz =
             (lcd_matrix_scaled_width - (4 * TAMA_LCD_ICON_SIZE)) / 3 + TAMA_LCD_ICON_SIZE;
-        
+        */
 
         uint16_t y = lcd_matrix_top;
         for(uint8_t row = 0; row < 16; ++row) {
@@ -88,16 +90,18 @@ static void tama_p1_draw_callback(Canvas* const canvas, void* cb_ctx) {
     furi_mutex_release(mutex);
 }
 
-static void tama_p1_input_callback(InputEvent* input_event, FuriMessageQueue* event_queue) {
-    furi_assert(event_queue);
+static void tama_p1_input_callback(InputEvent* input_event, void* cb_ctx) {
+    furi_assert(cb_ctx);
 
+    FuriMessageQueue* event_queue = cb_ctx;
     TamaEvent event = {.type = EventTypeInput, .input = *input_event};
     furi_message_queue_put(event_queue, &event, FuriWaitForever);
 }
 
-static void tama_p1_update_timer_callback(FuriMessageQueue* event_queue) {
-    furi_assert(event_queue);
+static void tama_p1_update_timer_callback(void* cb_ctx) {
+    furi_assert(cb_ctx);
 
+    FuriMessageQueue* event_queue = cb_ctx;
     TamaEvent event = {.type = EventTypeTick};
     furi_message_queue_put(event_queue, &event, 0);
 }
@@ -344,6 +348,7 @@ static int32_t tama_p1_worker(void* context) {
         }
     }
     LL_TIM_DisableCounter(TIM2);
+    furi_hal_bus_disable(FuriHalBusTIM2);
     furi_mutex_release(mutex);
     return 0;
 }
@@ -387,6 +392,7 @@ static void tama_p1_init(TamaApp* const ctx) {
 
     if(ctx->rom != NULL) {
         // Init TIM2
+        furi_hal_bus_enable(FuriHalBusTIM2);
         // 64KHz
         LL_TIM_InitTypeDef tim_init = {
             .Prescaler = 999,
