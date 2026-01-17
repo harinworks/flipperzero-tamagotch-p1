@@ -1,7 +1,7 @@
 #pragma once
 
 #include <input/input.h>
-#include "tamalib/tamalib.h"
+#include <tamalib.h>
 
 #define TAG "TamaP1"
 #define TAMA_ROM_PATH EXT_PATH("tama_p1/rom.bin")

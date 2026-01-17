@@ -9,4 +9,10 @@ App(
     order=215,
     fap_icon="tamaIcon.png",
     fap_category="Games",
+    fap_private_libs=[
+        Lib(
+            name="tamalib",
+            cflags=["-Wno-unused-parameter"],
+        ),
+    ]
 )

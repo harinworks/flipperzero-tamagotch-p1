@@ -4,7 +4,7 @@
 #include <storage/storage.h>
 #include <stdlib.h>
 #include <stm32wbxx_ll_tim.h>
-#include "tamalib/tamalib.h"
+#include <tamalib.h>
 #include "tama.h"
 #include "compiled/assets_icons.h"
 
