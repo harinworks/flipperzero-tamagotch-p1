@@ -1,7 +1,10 @@
 #include <furi.h>
+#include <furi_hal.h>
 #include <furi_hal_bus.h>
 #include <gui/gui.h>
-#include <input/input.h>
+#include <gui/view.h>
+#include <gui/view_dispatcher.h>
+#include <gui/modules/variable_item_list.h>
 #include <storage/storage.h>
 #include <stdlib.h>
 #include <stm32wbxx_ll_tim.h>
@@ -9,8 +12,27 @@
 #include "tama.h"
 #include "compiled/assets_icons.h"
 
+typedef enum {
+    TamaViewGame,
+    TamaViewMenu,
+} TamaView;
+
+typedef enum {
+    TamaMenuItemSave,
+    TamaMenuItemLoad,
+    TamaMenuItemSpeed,
+    TamaMenuItemMute,
+} TamaMenuItem;
+
+static const char* cpu_speed_names[] = {"Off", "2x", "4x"};
+static const char* buzzer_mute_names[] = {"Off", "On"};
+
 TamaApp* g_ctx;
 FuriMutex* g_state_mutex;
+FuriMutex* g_draw_mutex;
+
+static void tama_p1_save_state();
+static void tama_p1_load_state();
 
 static const Icon* icons_list[] = {
     &I_icon_0,
@@ -23,11 +45,76 @@ static const Icon* icons_list[] = {
     &I_icon_7,
 };
 
-static void tama_p1_draw_callback(Canvas* const canvas, void* cb_ctx) {
+static void tama_p1_cpu_speed_change_callback(VariableItem* item) {
+    uint8_t index = variable_item_get_current_value_index(item);
+    variable_item_set_current_value_text(item, cpu_speed_names[index]);
+
+    if(furi_mutex_acquire(g_state_mutex, FuriWaitForever) != FuriStatusOk) return;
+
+    g_ctx->cpu_speed = index;
+    tamalib_set_speed(1 << index);
+    furi_mutex_release(g_state_mutex);
+}
+
+static void tama_p1_buzzer_mute_change_callback(VariableItem* item) {
+    uint8_t index = variable_item_get_current_value_index(item);
+    variable_item_set_current_value_text(item, buzzer_mute_names[index]);
+
+    if(furi_mutex_acquire(g_state_mutex, FuriWaitForever) != FuriStatusOk) return;
+
+    g_ctx->buzzer_mute = index == 1;
+
+    if(g_ctx->buzzer_mute && furi_hal_speaker_is_mine()) {
+        furi_hal_speaker_stop();
+        furi_hal_speaker_release();
+    }
+
+    furi_mutex_release(g_state_mutex);
+}
+
+static void tama_p1_menu_callback(void* cb_ctx, uint32_t index) {
     furi_assert(cb_ctx);
 
-    FuriMutex* const mutex = cb_ctx;
-    if(furi_mutex_acquire(mutex, 25) != FuriStatusOk) return;
+    ViewDispatcher* view_dispatcher = cb_ctx;
+
+    switch(index) {
+    case TamaMenuItemSave:
+        tama_p1_save_state();
+        view_dispatcher_switch_to_view(view_dispatcher, TamaViewGame);
+        break;
+
+    case TamaMenuItemLoad:
+        tama_p1_load_state();
+        view_dispatcher_switch_to_view(view_dispatcher, TamaViewGame);
+        break;
+    }
+}
+
+static VariableItemList* tama_p1_setup_menu(ViewDispatcher* view_dispatcher) {
+    VariableItemList* list = variable_item_list_alloc();
+    VariableItem* item;
+
+    variable_item_list_add(list, "Save State", 0, NULL, NULL);
+    variable_item_list_add(list, "Load State", 0, NULL, NULL);
+
+    item = variable_item_list_add(list, "CPU Speed", 3, tama_p1_cpu_speed_change_callback, NULL);
+    variable_item_set_current_value_index(item, g_ctx->cpu_speed);
+    variable_item_set_current_value_text(item, cpu_speed_names[g_ctx->cpu_speed]);
+
+    item =
+        variable_item_list_add(list, "Buzzer Mute", 2, tama_p1_buzzer_mute_change_callback, NULL);
+    variable_item_set_current_value_index(item, g_ctx->buzzer_mute ? 1 : 0);
+    variable_item_set_current_value_text(item, buzzer_mute_names[g_ctx->buzzer_mute ? 1 : 0]);
+
+    variable_item_list_set_enter_callback(list, tama_p1_menu_callback, view_dispatcher);
+
+    return list;
+}
+
+static void tama_p1_draw_callback(Canvas* const canvas, void* cb_ctx) {
+    UNUSED(cb_ctx);
+
+    if(furi_mutex_acquire(g_draw_mutex, 25) != FuriStatusOk) return;
 
     if(g_ctx->rom == NULL) {
         canvas_set_font(canvas, FontPrimary);
@@ -87,23 +174,89 @@ static void tama_p1_draw_callback(Canvas* const canvas, void* cb_ctx) {
         }
     }
 
-    furi_mutex_release(mutex);
+    furi_mutex_release(g_draw_mutex);
 }
 
-static void tama_p1_input_callback(InputEvent* input_event, void* cb_ctx) {
+static bool tama_p1_input_callback(InputEvent* input_event, void* cb_ctx) {
     furi_assert(cb_ctx);
 
-    FuriMessageQueue* event_queue = cb_ctx;
-    TamaEvent event = {.type = EventTypeInput, .input = *input_event};
-    furi_message_queue_put(event_queue, &event, FuriWaitForever);
+    ViewDispatcher* view_dispatcher = cb_ctx;
+
+    if(furi_mutex_acquire(g_state_mutex, FuriWaitForever) != FuriStatusOk) return false;
+
+    FURI_LOG_D(
+        TAG,
+        "EventTypeInput: %ld %d %d",
+        input_event->sequence,
+        input_event->key,
+        input_event->type);
+    InputType input_type = input_event->type;
+
+    if(input_type == InputTypePress || input_type == InputTypeRelease) {
+        btn_state_t tama_btn_state = 0;
+        if(input_type == InputTypePress)
+            tama_btn_state = BTN_STATE_PRESSED;
+        else if(input_type == InputTypeRelease)
+            tama_btn_state = BTN_STATE_RELEASED;
+
+        if(input_event->key == InputKeyLeft)
+            tamalib_set_button(BTN_LEFT, tama_btn_state);
+        else if(input_event->key == InputKeyOk)
+            tamalib_set_button(BTN_MIDDLE, tama_btn_state);
+        else if(input_event->key == InputKeyRight)
+            tamalib_set_button(BTN_RIGHT, tama_btn_state);
+    } else if(input_event->key == InputKeyBack) {
+        if(input_event->type == InputTypeShort) {
+            view_dispatcher_switch_to_view(view_dispatcher, TamaViewMenu);
+        } else if(input_event->type == InputTypeLong) {
+            tama_p1_save_state();
+            view_dispatcher_stop(view_dispatcher);
+        }
+    }
+
+    furi_mutex_release(g_state_mutex);
+
+    return true;
+}
+
+static void tama_p1_game_enter_callback(void* cb_ctx) {
+    UNUSED(cb_ctx);
+
+    if(g_ctx->timer) furi_timer_start(g_ctx->timer, furi_kernel_get_tick_frequency() / 30);
+}
+
+static void tama_p1_game_exit_callback(void* cb_ctx) {
+    UNUSED(cb_ctx);
+
+    if(g_ctx->timer) furi_timer_stop(g_ctx->timer);
+}
+
+static View* tama_p1_setup_game(ViewDispatcher* view_dispatcher) {
+    View* view = view_alloc();
+
+    view_set_context(view, view_dispatcher);
+    view_set_draw_callback(view, tama_p1_draw_callback);
+    view_set_input_callback(view, tama_p1_input_callback);
+    view_set_enter_callback(view, tama_p1_game_enter_callback);
+    view_set_exit_callback(view, tama_p1_game_exit_callback);
+
+    return view;
+}
+
+static bool tama_p1_navigation_callback(void* cb_ctx) {
+    furi_assert(cb_ctx);
+
+    ViewDispatcher* view_dispatcher = cb_ctx;
+    view_dispatcher_switch_to_view(view_dispatcher, TamaViewGame);
+
+    return true;
 }
 
 static void tama_p1_update_timer_callback(void* cb_ctx) {
     furi_assert(cb_ctx);
 
-    FuriMessageQueue* event_queue = cb_ctx;
-    TamaEvent event = {.type = EventTypeTick};
-    furi_message_queue_put(event_queue, &event, 0);
+    View* view = cb_ctx;
+    view_commit_model(view, true);
 }
 
 static void tama_p1_load_state() {
@@ -111,6 +264,8 @@ static void tama_p1_load_state() {
     uint8_t buf[4];
     bool error = false;
     state = tamalib_get_state();
+
+    if(furi_mutex_acquire(g_state_mutex, FuriWaitForever) != FuriStatusOk) return;
 
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* file = storage_file_alloc(storage);
@@ -210,6 +365,7 @@ static void tama_p1_load_state() {
     storage_file_close(file);
     storage_file_free(file);
     furi_record_close(RECORD_STORAGE);
+    furi_mutex_release(g_state_mutex);
 }
 
 static void tama_p1_save_state() {
@@ -220,6 +376,8 @@ static void tama_p1_save_state() {
     state_t* state;
     uint32_t offset = 0;
     state = tamalib_get_state();
+
+    if(furi_mutex_acquire(g_state_mutex, FuriWaitForever) != FuriStatusOk) return;
 
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* file = storage_file_alloc(storage);
@@ -322,6 +480,7 @@ static void tama_p1_save_state() {
     furi_record_close(RECORD_STORAGE);
 
     FURI_LOG_D(TAG, "Finished Writing %lu", offset);
+    furi_mutex_release(g_state_mutex);
 }
 
 static int32_t tama_p1_worker(void* context) {
@@ -344,6 +503,12 @@ static int32_t tama_p1_worker(void* context) {
             tamalib_step();
         }
     }
+
+    if(furi_hal_speaker_is_mine()) {
+        furi_hal_speaker_stop();
+        furi_hal_speaker_release();
+    }
+
     LL_TIM_DisableCounter(TIM2);
     furi_hal_bus_disable(FuriHalBusTIM2);
     furi_mutex_release(mutex);
@@ -430,82 +595,45 @@ int32_t tama_p1_app(void* p) {
 
     TamaApp* ctx = malloc(sizeof(TamaApp));
     g_state_mutex = furi_mutex_alloc(FuriMutexTypeRecursive);
+    g_draw_mutex = furi_mutex_alloc(FuriMutexTypeRecursive);
     tama_p1_init(ctx);
 
-    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(TamaEvent));
-
-    ViewPort* view_port = view_port_alloc();
-    view_port_draw_callback_set(view_port, tama_p1_draw_callback, g_state_mutex);
-    view_port_input_callback_set(view_port, tama_p1_input_callback, event_queue);
-
     Gui* gui = furi_record_open(RECORD_GUI);
-    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
 
-    FuriTimer* timer =
-        furi_timer_alloc(tama_p1_update_timer_callback, FuriTimerTypePeriodic, event_queue);
-    furi_timer_start(timer, furi_kernel_get_tick_frequency() / 30);
+    ViewDispatcher* view_dispatcher = view_dispatcher_alloc();
+    view_dispatcher_set_event_callback_context(view_dispatcher, view_dispatcher);
+    view_dispatcher_set_navigation_event_callback(view_dispatcher, tama_p1_navigation_callback);
+    view_dispatcher_attach_to_gui(view_dispatcher, gui, ViewDispatcherTypeFullscreen);
 
-    for(bool running = true; running;) {
-        TamaEvent event;
-        FuriStatus event_status = furi_message_queue_get(event_queue, &event, FuriWaitForever);
-        if(event_status == FuriStatusOk) {
-            // Local override with acquired context
-            if(furi_mutex_acquire(g_state_mutex, FuriWaitForever) != FuriStatusOk) continue;
+    View* game_view = tama_p1_setup_game(view_dispatcher);
+    view_dispatcher_add_view(view_dispatcher, TamaViewGame, game_view);
 
-            if(event.type == EventTypeTick) {
-                // FURI_LOG_D(TAG, "EventTypeTick");
-                view_port_update(view_port);
-            } else if(event.type == EventTypeInput) {
-                FURI_LOG_D(
-                    TAG,
-                    "EventTypeInput: %ld %d %d",
-                    event.input.sequence,
-                    event.input.key,
-                    event.input.type);
-                InputType input_type = event.input.type;
-                if(input_type == InputTypePress || input_type == InputTypeRelease) {
-                    btn_state_t tama_btn_state = 0;
-                    if(input_type == InputTypePress)
-                        tama_btn_state = BTN_STATE_PRESSED;
-                    else if(input_type == InputTypeRelease)
-                        tama_btn_state = BTN_STATE_RELEASED;
+    VariableItemList* menu_list = tama_p1_setup_menu(view_dispatcher);
+    view_dispatcher_add_view(
+        view_dispatcher, TamaViewMenu, variable_item_list_get_view(menu_list));
 
-                    if(event.input.key == InputKeyLeft) {
-                        tamalib_set_button(BTN_LEFT, tama_btn_state);
-                    } else if(event.input.key == InputKeyOk) {
-                        tamalib_set_button(BTN_MIDDLE, tama_btn_state);
-                    } else if(event.input.key == InputKeyRight) {
-                        tamalib_set_button(BTN_RIGHT, tama_btn_state);
-                    }
-                }
+    ctx->timer = furi_timer_alloc(tama_p1_update_timer_callback, FuriTimerTypePeriodic, game_view);
 
-                if(event.input.key == InputKeyBack && event.input.type == InputTypeLong) {
-                    furi_timer_stop(timer);
-                    running = false;
-
-                    tama_p1_save_state();
-                }
-            }
-
-            furi_mutex_release(g_state_mutex);
-        } else {
-            // Timeout
-            // FURI_LOG_D(TAG, "Timed out");
-        }
-    }
+    view_dispatcher_switch_to_view(view_dispatcher, TamaViewGame);
+    view_dispatcher_run(view_dispatcher);
 
     if(ctx->rom != NULL) {
         furi_thread_flags_set(furi_thread_get_id(ctx->thread), 1);
         furi_thread_join(ctx->thread);
     }
 
-    furi_timer_free(timer);
-    view_port_enabled_set(view_port, false);
-    gui_remove_view_port(gui, view_port);
+    furi_timer_free(ctx->timer);
+    ctx->timer = NULL;
+
+    view_dispatcher_remove_view(view_dispatcher, TamaViewGame);
+    view_dispatcher_remove_view(view_dispatcher, TamaViewMenu);
+    view_free(game_view);
+    variable_item_list_free(menu_list);
+    view_dispatcher_free(view_dispatcher);
     furi_record_close(RECORD_GUI);
-    view_port_free(view_port);
-    furi_message_queue_free(event_queue);
+
     furi_mutex_free(g_state_mutex);
+    furi_mutex_free(g_draw_mutex);
     tama_p1_deinit(ctx);
     free(ctx);
 

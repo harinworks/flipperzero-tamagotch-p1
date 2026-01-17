@@ -15,6 +15,7 @@
 
 typedef struct {
     FuriThread* thread;
+    FuriTimer* timer;
     hal_t hal;
     uint8_t* rom;
     // 32x16 screen, perfectly represented through uint32_t
@@ -24,6 +25,8 @@ typedef struct {
     bool fast_forward_done;
     bool buzzer_on;
     float frequency;
+    uint8_t cpu_speed;
+    bool buzzer_mute;
 } TamaApp;
 
 typedef enum {
@@ -38,5 +41,6 @@ typedef struct {
 
 extern TamaApp* g_ctx;
 extern FuriMutex* g_state_mutex;
+extern FuriMutex* g_draw_mutex;
 
 void tama_p1_hal_init(hal_t* hal);

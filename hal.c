@@ -105,7 +105,7 @@ static void tama_p1_hal_set_lcd_icon(u8_t icon, bool_t val) {
 }
 
 static void tama_p1_hal_play_frequency(bool_t en) {
-    if(en) {
+    if(en && !g_ctx->buzzer_mute) {
         if(furi_hal_speaker_is_mine() || furi_hal_speaker_acquire(30)) {
             furi_hal_speaker_start(g_ctx->frequency, 0.5f);
         }
