@@ -15,6 +15,8 @@ typedef enum {
     TamaMenuItemLoad,
     TamaMenuItemSpeed,
     TamaMenuItemMute,
+    TamaMenuItemReset,
+    TamaMenuItemBrowse,
     TamaMenuItemStopNoSave,
 } TamaMenuItem;
 
@@ -62,6 +64,14 @@ static void tama_menu_callback(void* context, uint32_t index) {
         if(tama_menu->callback) tama_menu->callback(TamaMenuEventTypeLoad, tama_menu->context);
         break;
 
+    case TamaMenuItemReset:
+        if(tama_menu->callback) tama_menu->callback(TamaMenuEventTypeReset, tama_menu->context);
+        break;
+
+    case TamaMenuItemBrowse:
+        if(tama_menu->callback) tama_menu->callback(TamaMenuEventTypeBrowse, tama_menu->context);
+        break;
+
     case TamaMenuItemStopNoSave:
         if(tama_menu->callback)
             tama_menu->callback(TamaMenuEventTypeStopNoSave, tama_menu->context);
@@ -90,6 +100,8 @@ TamaMenu* tama_menu_alloc() {
     variable_item_set_current_value_index(item, g_ctx->buzzer_mute ? 1 : 0);
     variable_item_set_current_value_text(item, buzzer_mute_names[g_ctx->buzzer_mute ? 1 : 0]);
 
+    variable_item_list_add(tama_menu->list, "Reset ROM", 0, NULL, NULL);
+    variable_item_list_add(tama_menu->list, "Browse ROM", 0, NULL, NULL);
     variable_item_list_add(tama_menu->list, "Exit Without Save", 0, NULL, NULL);
 
     variable_item_list_set_enter_callback(tama_menu->list, tama_menu_callback, tama_menu);

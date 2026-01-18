@@ -4,6 +4,7 @@
 #include <gui/gui.h>
 #include <gui/view.h>
 #include <gui/view_dispatcher.h>
+#include <dialogs/dialogs.h>
 #include <storage/storage.h>
 #include <stdlib.h>
 #include <stm32wbxx_ll_tim.h>
@@ -17,7 +18,16 @@ typedef enum {
     TamaViewMenu,
 } TamaView;
 
+typedef enum {
+    TamaModeReset,
+    TamaModeBrowse,
+    TamaModeExit,
+} TamaMode;
+
 TamaApp* g_ctx;
+TamaMode g_mode;
+FuriString* g_rom_path;
+FuriString* g_sav_path;
 FuriMutex* g_state_mutex;
 FuriMutex* g_draw_mutex;
 
@@ -43,15 +53,19 @@ static void tama_p1_load_state() {
     bool error = false;
     state = tamalib_get_state();
 
+    if(g_sav_path == NULL) return;
     if(furi_mutex_acquire(g_state_mutex, FuriWaitForever) != FuriStatusOk) return;
 
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* file = storage_file_alloc(storage);
-    if(storage_file_open(file, TAMA_SAVE_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+    if(storage_file_open(file, furi_string_get_cstr(g_sav_path), FSAM_READ, FSOM_OPEN_EXISTING)) {
         storage_file_read(file, &buf, 4);
         if(buf[0] != (uint8_t)STATE_FILE_MAGIC[0] || buf[1] != (uint8_t)STATE_FILE_MAGIC[1] ||
            buf[2] != (uint8_t)STATE_FILE_MAGIC[2] || buf[3] != (uint8_t)STATE_FILE_MAGIC[3]) {
-            FURI_LOG_E(TAG, "FATAL: Wrong state file magic in \"%s\" !\n", TAMA_SAVE_PATH);
+            FURI_LOG_E(
+                TAG,
+                "FATAL: Wrong state file magic in \"%s\" !\n",
+                furi_string_get_cstr(g_sav_path));
             error = true;
         }
 
@@ -155,12 +169,13 @@ static void tama_p1_save_state() {
     uint32_t offset = 0;
     state = tamalib_get_state();
 
+    if(g_sav_path == NULL) return;
     if(furi_mutex_acquire(g_state_mutex, FuriWaitForever) != FuriStatusOk) return;
 
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* file = storage_file_alloc(storage);
 
-    if(storage_file_open(file, TAMA_SAVE_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+    if(storage_file_open(file, furi_string_get_cstr(g_sav_path), FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         buf[0] = (uint8_t)STATE_FILE_MAGIC[0];
         buf[1] = (uint8_t)STATE_FILE_MAGIC[1];
         buf[2] = (uint8_t)STATE_FILE_MAGIC[2];
@@ -301,9 +316,11 @@ static void tama_p1_init(TamaApp* const ctx) {
     // Load ROM
     Storage* storage = furi_record_open(RECORD_STORAGE);
     FileInfo fi;
-    if(storage_common_stat(storage, TAMA_ROM_PATH, &fi) == FSE_OK) {
+    if(g_rom_path != NULL &&
+       storage_common_stat(storage, furi_string_get_cstr(g_rom_path), &fi) == FSE_OK) {
         File* rom_file = storage_file_alloc(storage);
-        if(storage_file_open(rom_file, TAMA_ROM_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        if(storage_file_open(
+               rom_file, furi_string_get_cstr(g_rom_path), FSAM_READ, FSOM_OPEN_EXISTING)) {
             ctx->rom = malloc((size_t)fi.size);
             uint8_t* buf_ptr = ctx->rom;
             size_t read = 0;
@@ -375,6 +392,7 @@ static void tama_p1_game_callback(TamaGameEventType event_type, void* context) {
 
     switch(event_type) {
     case TamaGameEventTypeStop:
+        g_mode = TamaModeExit;
         tama_p1_save_state();
         view_dispatcher_stop(view_dispatcher);
         break;
@@ -399,7 +417,18 @@ static void tama_p1_menu_callback(TamaMenuEventType event_type, void* context) {
         tama_p1_load_state();
         break;
 
+    case TamaMenuEventTypeReset:
+        g_mode = TamaModeReset;
+        view_dispatcher_stop(view_dispatcher);
+        break;
+
+    case TamaMenuEventTypeBrowse:
+        g_mode = TamaModeBrowse;
+        view_dispatcher_stop(view_dispatcher);
+        break;
+
     case TamaMenuEventTypeStopNoSave:
+        g_mode = TamaModeExit;
         view_dispatcher_stop(view_dispatcher);
         break;
 
@@ -409,9 +438,7 @@ static void tama_p1_menu_callback(TamaMenuEventType event_type, void* context) {
     }
 }
 
-int32_t tama_p1_app(void* p) {
-    UNUSED(p);
-
+static void tama_p1_start() {
     TamaApp* ctx = malloc(sizeof(TamaApp));
     g_state_mutex = furi_mutex_alloc(FuriMutexTypeRecursive);
     g_draw_mutex = furi_mutex_alloc(FuriMutexTypeRecursive);
@@ -457,6 +484,67 @@ int32_t tama_p1_app(void* p) {
     furi_mutex_free(g_draw_mutex);
     tama_p1_deinit(ctx);
     free(ctx);
+}
+
+static FuriString* tama_p1_browse_path() {
+    FuriString* path;
+    path = furi_string_alloc();
+    furi_string_set(path, TAMA_BASE_PATH);
+
+    DialogsFileBrowserOptions options;
+    dialog_file_browser_set_basic_options(&options, NULL, NULL);
+    options.hide_ext = false;
+    options.base_path = TAMA_BASE_PATH;
+
+    DialogsApp* dialogs = furi_record_open(RECORD_DIALOGS);
+    bool ret = dialog_file_browser_show(dialogs, path, path, &options);
+
+    furi_record_close(RECORD_DIALOGS);
+
+    if(!ret) {
+        furi_string_free(path);
+        return NULL;
+    }
+
+    return path;
+}
+
+int32_t tama_p1_app(void* p) {
+    UNUSED(p);
+
+    const char* def_rom_path = p != NULL && strlen(p) > 0 ? p : TAMA_ROM_PATH;
+    g_mode = TamaModeReset;
+
+    while(g_mode != TamaModeExit) {
+        switch(g_mode) {
+        case TamaModeReset:
+            g_rom_path = furi_string_alloc();
+            furi_string_set_str(g_rom_path, def_rom_path);
+            break;
+
+        case TamaModeBrowse:
+            g_rom_path = tama_p1_browse_path();
+            break;
+
+        default:
+            continue;
+        }
+
+        if(g_rom_path != NULL) {
+            g_sav_path = furi_string_alloc();
+            furi_string_set(g_sav_path, g_rom_path);
+
+            size_t pos = furi_string_search_rchar(g_sav_path, '.');
+            if(pos != FURI_STRING_FAILURE) furi_string_left(g_sav_path, pos);
+
+            furi_string_cat_str(g_sav_path, ".sav");
+        }
+
+        tama_p1_start();
+
+        if(g_rom_path != NULL) furi_string_free(g_rom_path);
+        if(g_sav_path != NULL) furi_string_free(g_sav_path);
+    }
 
     return 0;
 }
