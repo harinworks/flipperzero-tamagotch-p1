@@ -5,6 +5,7 @@
 typedef enum {
     TamaMenuEventTypeSave,
     TamaMenuEventTypeLoad,
+    TamaMenuEventTypeStopNoSave,
     TamaMenuEventTypeClose,
 } TamaMenuEventType;
 

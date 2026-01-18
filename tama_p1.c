@@ -399,6 +399,10 @@ static void tama_p1_menu_callback(TamaMenuEventType event_type, void* context) {
         tama_p1_load_state();
         break;
 
+    case TamaMenuEventTypeStopNoSave:
+        view_dispatcher_stop(view_dispatcher);
+        break;
+
     case TamaMenuEventTypeClose:
         view_dispatcher_switch_to_view(view_dispatcher, TamaViewGame);
         break;

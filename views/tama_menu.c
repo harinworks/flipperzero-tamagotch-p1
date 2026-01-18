@@ -15,6 +15,7 @@ typedef enum {
     TamaMenuItemLoad,
     TamaMenuItemSpeed,
     TamaMenuItemMute,
+    TamaMenuItemStopNoSave,
 } TamaMenuItem;
 
 static const char* cpu_speed_names[] = {"Off", "2x", "4x"};
@@ -60,6 +61,11 @@ static void tama_menu_callback(void* context, uint32_t index) {
     case TamaMenuItemLoad:
         if(tama_menu->callback) tama_menu->callback(TamaMenuEventTypeLoad, tama_menu->context);
         break;
+
+    case TamaMenuItemStopNoSave:
+        if(tama_menu->callback)
+            tama_menu->callback(TamaMenuEventTypeStopNoSave, tama_menu->context);
+        break;
     }
 
     if(tama_menu->callback) tama_menu->callback(TamaMenuEventTypeClose, tama_menu->context);
@@ -83,6 +89,8 @@ TamaMenu* tama_menu_alloc() {
         tama_menu->list, "Buzzer Mute", 2, tama_buzzer_mute_change_callback, NULL);
     variable_item_set_current_value_index(item, g_ctx->buzzer_mute ? 1 : 0);
     variable_item_set_current_value_text(item, buzzer_mute_names[g_ctx->buzzer_mute ? 1 : 0]);
+
+    variable_item_list_add(tama_menu->list, "Exit Without Save", 0, NULL, NULL);
 
     variable_item_list_set_enter_callback(tama_menu->list, tama_menu_callback, tama_menu);
 
